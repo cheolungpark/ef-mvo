@@ -1,5 +1,7 @@
 # ef_mvo — 효율적 프론티어(평균-분산) 최적화
 
+[![Open In Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/cheolungpark/ef-mvo/blob/main/ef_mvo_colab.ipynb)
+
 순수 파이썬(numpy/scipy)으로 구현한 표준 포트폴리오 최적화 라이브러리.
 Markowitz 평균-분산 최적화, 효율적 프론티어, L2(릿지) 정규화, Michaud 리샘플링을
 제공한다.
@@ -47,11 +49,10 @@ python/
 (설치·서버 비용 0). 노트북이 셀에서 `ef_mvo` 패키지를 직접 만든 뒤 예제·그래프를
 실행하고, 마지막 셀에서 `μ·σ·상관행렬` 만 바꾸면 내 값으로 계산된다.
 
-- **여는 법 A**: [colab.research.google.com](https://colab.research.google.com) →
-  `파일 → 노트북 업로드` → `ef_mvo_colab.ipynb` 선택 → `런타임 → 모두 실행`.
-- **여는 법 B (링크 공유)**: 이 저장소를 GitHub에 올린 뒤
-  `https://colab.research.google.com/github/<user>/<repo>/blob/main/.../ef_mvo_colab.ipynb`
-  로 열면 클릭 한 번으로 실행된다.
+**클릭 한 번 실행**:
+👉 https://colab.research.google.com/github/cheolungpark/ef-mvo/blob/main/ef_mvo_colab.ipynb
+
+열린 뒤 `런타임 → 모두 실행`. 맨 끝 셀에서 μ·σ·상관행렬만 바꾸면 내 값으로 계산된다.
 
 노트북을 다시 생성하려면(소스 수정 후): `python build_colab.py`
 
