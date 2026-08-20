@@ -51,7 +51,7 @@ print('준비 완료 ✅  아래 폼에서 입력하세요.')
 
 # --- 순수 계산 함수 (ipywidgets 불필요) -------------------------------------
 RUN_OPT = r"""# (준비) 계산 함수 — 자동 실행, 건드리지 마세요
-def run_opt(mu, sd, corr, mins, maxs, include, target, gamma):
+def run_opt(mu, sd, corr, mins, maxs, include, target, gamma, le=None):
     mu = np.asarray(mu, float); sd = np.asarray(sd, float)
     corr = np.asarray(corr, float)
     cov = np.outer(sd, sd) * corr
@@ -65,12 +65,12 @@ def run_opt(mu, sd, corr, mins, maxs, include, target, gamma):
         return {'error': '포함한 자산들의 최대비중 합이 100%보다 작아 합계 100%가 '
                          '불가능합니다. 최대(%)를 늘리세요.'}
     r = min_variance(mu, cov, target_return=target, bounds=bounds,
-                     exclude=exclude, l2_gamma=gamma)
+                     exclude=exclude, l2_gamma=gamma, linear_ineq_le=le)
     if not r.success:
         return {'error': '조건이 너무 빡빡해 답을 못 찾았어요. 최소/최대 비중을 '
                          '넓히거나 목표수익을 낮춰보세요.'}
     pts = efficient_frontier(mu, cov, n_points=25, bounds=bounds,
-                             exclude=exclude, l2_gamma=gamma)
+                             exclude=exclude, l2_gamma=gamma, linear_ineq_le=le)
     return {'r': r, 'pts': pts}
 """
 
@@ -121,6 +121,17 @@ target = W.FloatSlider(value=5.0, min=2.0, max=9.0, step=0.1, description='목�
 l2 = W.FloatSlider(value=0.0, min=0.0, max=0.05, step=0.005, description='고르게 나누기',
                    style={'description_width': '110px'}, layout=W_('420px'),
                    readout_format='.3f')
+
+# 관계형 제약: 해외신흥주식 ≤ 해외선진주식 × 배수
+try:
+    IDX_DEV = names.index('해외선진주식'); IDX_EMG = names.index('해외신흥주식')
+except ValueError:
+    IDX_DEV = IDX_EMG = None
+ratio_on = W.Checkbox(value=False, indent=False,
+                      description='해외신흥 ≤ 해외선진 × 배수', layout=W_('260px'))
+ratio_val = W.BoundedFloatText(value=1.0, min=0.0, max=5.0, step=0.1, layout=W_('80px'))
+ratio_box = W.HBox([ratio_on, W.HTML('배수:', layout=W_('40px')), ratio_val])
+
 btn = W.Button(description='▶ 계산하기', button_style='success', layout=W.Layout(width='220px', height='42px'))
 out = W.Output()
 
@@ -133,7 +144,12 @@ def on_click(_):
         corr = np.eye(n)
         for (i, j), t in corr_in.items():
             corr[i, j] = corr[j, i] = t.value
-        res = run_opt(mu, sd, corr, mins, maxs, include, target.value/100, l2.value)
+        # 관계형 제약: 신흥 ≤ 선진 × 배수  →  w_신흥 - 배수·w_선진 ≤ 0
+        le = None
+        if ratio_on.value and IDX_DEV is not None:
+            a = np.zeros(n); a[IDX_EMG] = 1.0; a[IDX_DEV] = -ratio_val.value
+            le = [(a, 0.0)]
+        res = run_opt(mu, sd, corr, mins, maxs, include, target.value/100, l2.value, le)
         if 'error' in res:
             display(HTML(f"<b style='color:#c0392b'>⚠️ {res['error']}</b>")); return
         r, pts = res['r'], res['pts']
@@ -160,8 +176,10 @@ btn.on_click(on_click)
 display(W.HTML("<h2>① 표에 숫자 입력 → ② '▶ 계산하기' 클릭</h2>"
                "<p>· 어떤 자산을 빼려면 <b>포함</b> 체크 해제<br>"
                "· 한 자산이 너무 쏠리면 <b>최대(%)</b>를 낮추세요(예: 30)<br>"
-               "· <b>고르게 나누기</b>를 올리면 비중이 더 분산됩니다</p>"))
-display(header, *rows, adv, target, l2, btn, out)
+               "· <b>고르게 나누기</b>를 올리면 비중이 더 분산됩니다<br>"
+               "· <b>해외신흥 ≤ 해외선진</b>: 체크하면 신흥 비중이 선진을 넘지 않음"
+               "(배수 0.5면 선진의 절반까지)</p>"))
+display(header, *rows, adv, target, l2, ratio_box, btn, out)
 """
 
 cells = [
