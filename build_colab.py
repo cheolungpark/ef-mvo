@@ -1,7 +1,8 @@
-"""ef_mvo 소스를 읽어 자기완결형 Colab 노트북(.ipynb)을 생성.
+"""ef_mvo 소스를 읽어 '컴맹용 폼 UI' Colab 노트북(.ipynb)을 생성.
 
-노트북은 셀에서 ef_mvo 패키지를 그대로 재생성(%%writefile)한 뒤 실행하므로,
-저장소를 clone 하지 않아도 Colab에서 바로 돌아간다. (numpy/scipy는 Colab 내장)
+노트북은 셀에서 ef_mvo 패키지를 재생성(%%writefile)한 뒤, ipywidgets 폼을
+띄운다. 사용자는 표에 숫자만 넣고 '▶ 계산하기'를 누르면 결과 표·그래프가
+나온다(코드 편집 불필요). numpy/scipy/ipywidgets 는 Colab 내장.
 
     python build_colab.py   →  ef_mvo_colab.ipynb
 """
@@ -29,140 +30,162 @@ def writefile_cell(relpath: str) -> dict:
     return code(f"%%writefile {relpath}\n{body}")
 
 
+# --- 폰트 설정 + 임포트 -----------------------------------------------------
+SETUP = r"""# (준비) 한글 그래프 폰트 + 라이브러리 로드 — 자동 실행, 건드리지 마세요
+try:
+    import os, matplotlib, matplotlib.font_manager as fm
+    if not any('Nanum' in f.name for f in fm.fontManager.ttflist):
+        os.system('apt-get -qq install -y fonts-nanum > /dev/null 2>&1')
+        for fp in fm.findSystemFonts(fontpaths=['/usr/share/fonts/truetype/nanum']):
+            fm.fontManager.addfont(fp)
+    matplotlib.rc('font', family='NanumGothic')
+    matplotlib.rc('axes', unicode_minus=False)
+except Exception as e:
+    print('폰트 설정 건너뜀(그래프 한글이 깨질 수 있으나 표는 정상):', e)
+
+import numpy as np
+from ef_mvo import min_variance, efficient_frontier
+from ef_mvo.sample_data import ASSET_NAMES, SAMPLE_MU, SAMPLE_STD, SAMPLE_CORR
+print('준비 완료 ✅  아래 폼에서 입력하세요.')
+"""
+
+# --- 순수 계산 함수 (ipywidgets 불필요) -------------------------------------
+RUN_OPT = r"""# (준비) 계산 함수 — 자동 실행, 건드리지 마세요
+def run_opt(mu, sd, corr, mins, maxs, include, target, gamma):
+    mu = np.asarray(mu, float); sd = np.asarray(sd, float)
+    corr = np.asarray(corr, float)
+    cov = np.outer(sd, sd) * corr
+    if np.linalg.eigvalsh(cov).min() < -1e-8:
+        return {'error': '상관행렬 값이 수학적으로 불가능한 조합입니다. '
+                         '고급▸상관행렬 값을 확인하세요(보통 -1~1).'}
+    n = len(mu)
+    exclude = [i for i in range(n) if not include[i]]
+    bounds = [(mins[i], maxs[i]) for i in range(n)]
+    if sum(maxs[i] for i in range(n) if include[i]) < 0.999:
+        return {'error': '포함한 자산들의 최대비중 합이 100%보다 작아 합계 100%가 '
+                         '불가능합니다. 최대(%)를 늘리세요.'}
+    r = min_variance(mu, cov, target_return=target, bounds=bounds,
+                     exclude=exclude, l2_gamma=gamma)
+    if not r.success:
+        return {'error': '조건이 너무 빡빡해 답을 못 찾았어요. 최소/최대 비중을 '
+                         '넓히거나 목표수익을 낮춰보세요.'}
+    pts = efficient_frontier(mu, cov, n_points=25, bounds=bounds,
+                             exclude=exclude, l2_gamma=gamma)
+    return {'r': r, 'pts': pts}
+"""
+
+# --- ipywidgets 폼 ----------------------------------------------------------
+FORM = r"""# 입력 폼 — 표에 숫자를 넣고 아래 '▶ 계산하기'를 누르세요
+import ipywidgets as W
+from IPython.display import display, clear_output, HTML
+import matplotlib.pyplot as plt
+
+names = list(ASSET_NAMES); n = len(names)
+W_ = lambda px: W.Layout(width=px)
+
+mu_in, sd_in, min_in, max_in, inc_in = [], [], [], [], []
+header = W.HBox([W.HTML('<b>자산</b>', layout=W_('120px')),
+                W.HTML('<b>기대수익 μ(%)</b>', layout=W_('130px')),
+                W.HTML('<b>변동성 σ(%)</b>', layout=W_('130px')),
+                W.HTML('<b>최소(%)</b>', layout=W_('90px')),
+                W.HTML('<b>최대(%)</b>', layout=W_('90px')),
+                W.HTML('<b>포함</b>', layout=W_('55px'))])
+rows = []
+for i, nm in enumerate(names):
+    m = W.FloatText(value=round(float(SAMPLE_MU[i])*100, 2), layout=W_('130px'))
+    s = W.FloatText(value=round(float(SAMPLE_STD[i])*100, 2), layout=W_('130px'))
+    lo = W.FloatText(value=0.0, layout=W_('90px'))
+    hi = W.FloatText(value=100.0, layout=W_('90px'))
+    inc = W.Checkbox(value=True, indent=False, layout=W_('55px'))
+    mu_in.append(m); sd_in.append(s); min_in.append(lo); max_in.append(hi); inc_in.append(inc)
+    rows.append(W.HBox([W.HTML(nm, layout=W_('120px')), m, s, lo, hi, inc]))
+
+# 상관행렬(고급, 기본 접힘)
+corr_in = {}
+grid = []
+for i in range(n):
+    cells = [W.HTML(names[i][:5], layout=W_('80px'))]
+    for j in range(n):
+        if j <= i:
+            cells.append(W.HTML('', layout=W_('62px')))
+        else:
+            t = W.FloatText(value=round(float(SAMPLE_CORR[i][j]), 2), layout=W_('62px'))
+            corr_in[(i, j)] = t; cells.append(t)
+    grid.append(W.HBox(cells))
+adv = W.Accordion(children=[W.VBox([W.HTML('상관계수(-1~1). 잘 모르면 그대로 두세요.')] + grid)])
+adv.set_title(0, '⚙️ 고급: 상관행렬 (안 바꿔도 됨)'); adv.selected_index = None
+
+target = W.FloatSlider(value=5.0, min=2.0, max=9.0, step=0.1, description='목표수익(%)',
+                       style={'description_width': '110px'}, layout=W_('420px'),
+                       readout_format='.1f')
+l2 = W.FloatSlider(value=0.0, min=0.0, max=0.05, step=0.005, description='고르게 나누기',
+                   style={'description_width': '110px'}, layout=W_('420px'),
+                   readout_format='.3f')
+btn = W.Button(description='▶ 계산하기', button_style='success', layout=W.Layout(width='220px', height='42px'))
+out = W.Output()
+
+def on_click(_):
+    with out:
+        clear_output()
+        mu = [x.value/100 for x in mu_in]; sd = [x.value/100 for x in sd_in]
+        mins = [x.value/100 for x in min_in]; maxs = [x.value/100 for x in max_in]
+        include = [c.value for c in inc_in]
+        corr = np.eye(n)
+        for (i, j), t in corr_in.items():
+            corr[i, j] = corr[j, i] = t.value
+        res = run_opt(mu, sd, corr, mins, maxs, include, target.value/100, l2.value)
+        if 'error' in res:
+            display(HTML(f"<b style='color:#c0392b'>⚠️ {res['error']}</b>")); return
+        r, pts = res['r'], res['pts']
+        h = ("<h3>📊 추천 비중</h3>"
+             "<table style='border-collapse:collapse' border='1' cellpadding='6'>"
+             "<tr style='background:#eee'><th>자산</th><th>비중</th></tr>")
+        for nm, wt in zip(names, r.weights):
+            bar = '█' * int(round(wt*25))
+            h += f"<tr><td>{nm}</td><td style='font-family:monospace'>{wt*100:6.2f}%  <span style='color:#27ae60'>{bar}</span></td></tr>"
+        h += (f"<tr style='background:#f6f6f6'><td><b>합계</b></td>"
+              f"<td><b>{r.weights.sum()*100:.1f}%</b></td></tr></table>"
+              f"<p>📈 예상 수익률 <b>{r.ret*100:.2f}%</b> &nbsp;·&nbsp; "
+              f"📉 예상 위험(변동성) <b>{r.volatility*100:.2f}%</b></p>")
+        display(HTML(h))
+        plt.figure(figsize=(6, 4))
+        plt.plot([p.volatility*100 for p in pts], [p.ret*100 for p in pts], '-o', ms=3,
+                 label='효율적 프론티어')
+        plt.scatter([r.volatility*100], [r.ret*100], c='red', s=110, zorder=5,
+                    label='내 포트폴리오')
+        plt.xlabel('위험(변동성) %'); plt.ylabel('기대수익 %')
+        plt.title('효율적 프론티어'); plt.legend(); plt.grid(alpha=0.3); plt.show()
+
+btn.on_click(on_click)
+display(W.HTML("<h2>① 표에 숫자 입력 → ② '▶ 계산하기' 클릭</h2>"
+               "<p>· 어떤 자산을 빼려면 <b>포함</b> 체크 해제<br>"
+               "· 한 자산이 너무 쏠리면 <b>최대(%)</b>를 낮추세요(예: 30)<br>"
+               "· <b>고르게 나누기</b>를 올리면 비중이 더 분산됩니다</p>"))
+display(header, *rows, adv, target, l2, btn, out)
+"""
+
 cells = [
     md(
-        "# 효율적 프론티어(MVO) 최적화 — Colab\n"
+        "# 📈 포트폴리오 자동 배분 (효율적 프론티어)\n"
         "\n"
-        "순수 numpy/scipy 포트폴리오 최적화. **설치 불필요** (Colab 내장).\n"
+        "숫자만 넣으면 **위험 대비 수익이 가장 좋은 자산 비중**을 계산해 줍니다.\n"
         "\n"
-        "**사용법**: 상단 메뉴 `런타임 → 모두 실행` (Runtime → Run all).\n"
-        "아래 셀들이 `ef_mvo` 패키지를 만든 뒤 예제를 실행한다.\n"
-        "맨 끝 '내 데이터 입력' 셀에서 μ·σ·상관행렬만 바꾸면 내 값으로 계산된다."
+        "## 딱 3단계\n"
+        "1. 위 메뉴 **`런타임 → 모두 실행`** 클릭 (처음 한 번, 20~30초)\n"
+        "2. 맨 아래 **표에 숫자 입력**\n"
+        "3. **`▶ 계산하기`** 버튼 클릭 → 결과 표·그래프 확인\n"
+        "\n"
+        "> 코드는 안 봐도 됩니다. 아래 '준비' 셀들은 자동으로 돌아갑니다."
     ),
-    md("## 1. 패키지 생성 (셀에서 파일로 기록)"),
-    code("import os\nos.makedirs('ef_mvo', exist_ok=True)\nprint('ef_mvo/ 준비 완료')"),
+    md("---\n### ⬇️ 준비 셀 (자동 실행 · 건드리지 마세요)"),
+    code("import os\nos.makedirs('ef_mvo', exist_ok=True)"),
     writefile_cell("ef_mvo/optimizer.py"),
     writefile_cell("ef_mvo/sample_data.py"),
     writefile_cell("ef_mvo/__init__.py"),
-    md("## 2. 불러오기 & 샘플 데이터 (6자산, PLACEHOLDER 값)"),
-    code(
-        "import numpy as np\n"
-        "from ef_mvo import (min_variance, max_return, efficient_frontier,\n"
-        "                    min_variance_l2, resample_michaud, indices_of)\n"
-        "from ef_mvo.sample_data import sample\n"
-        "\n"
-        "mu, cov, names = sample()\n"
-        "for n, m, s in zip(names, mu, np.sqrt(np.diag(cov))):\n"
-        "    print(f'{n:10s}  μ={m:6.2%}  σ={s:6.2%}')"
-    ),
-    md("## 3. 최소분산 · 목표수익 제약"),
-    code(
-        "r = min_variance(mu, cov, target_return=0.05, bounds=(0, 1))\n"
-        "print('목표수익 5% 제약 하 최소분산 (성공:', r.success, ')')\n"
-        "for n, w in zip(names, r.weights):\n"
-        "    print(f'  {n:10s} {w:8.4%}')\n"
-        "print(f'  수익 {r.ret:.4%}  변동성 {r.volatility:.4%}')"
-    ),
-    md("## 4. 효율적 프론티어 (그래프)"),
-    code(
-        "import matplotlib.pyplot as plt\n"
-        "\n"
-        "pts = efficient_frontier(mu, cov, n_points=25, bounds=(0, 1))\n"
-        "vol = [p.volatility for p in pts]\n"
-        "ret = [p.ret for p in pts]\n"
-        "plt.figure(figsize=(6, 4))\n"
-        "plt.plot(vol, ret, '-o', ms=4)\n"
-        "plt.xlabel('Volatility (risk)')\n"
-        "plt.ylabel('Expected return')\n"
-        "plt.title('Efficient Frontier')\n"
-        "plt.grid(alpha=0.3)\n"
-        "plt.show()"
-    ),
-    md(
-        "## 5. L2 정규화 (코너해 완화)\n"
-        "\n"
-        "상관 높은 자산이 극단으로 쏠리는 걸 `γ` 페널티로 부드럽게 분산시킨다."
-    ),
-    code(
-        "print('γ      집중도(‖w‖²)  변동성   비중')\n"
-        "for g in [0.0, 0.005, 0.02, 0.1]:\n"
-        "    r = min_variance_l2(mu, cov, g, target_return=0.05, bounds=(0, 1))\n"
-        "    print(f'{g:<6} {r.weights@r.weights:8.3f}     {r.volatility:6.3%}  '\n"
-        "          f'{np.round(r.weights, 3).tolist()}')"
-    ),
-    md("## 6. 특정 자산 배제 (exclude, 이름으로)"),
-    code(
-        "ex = indices_of(names, ['해외신흥주식'])\n"
-        "r = min_variance(mu, cov, target_return=0.05, bounds=(0, 1), exclude=ex)\n"
-        "for n, w in zip(names, r.weights):\n"
-        "    print(f'  {n:10s} {w:8.4%}')\n"
-        "print('  → 해외신흥주식 배제, 합=%.4f' % r.weights.sum())"
-    ),
-    md(
-        "## 7. 부등식 제약 — 선진/신흥 코너해 방지\n"
-        "\n"
-        "인덱스: `0 국내주식·1 국내채권·2 해외선진주식·3 해외신흥주식·4 해외채권·5 현금성`\n"
-        "\n"
-        "- `linear_ineq`   : `aᵀw ≥ b`\n"
-        "- `linear_ineq_le`: `aᵀw ≤ c`  (부호 반전 불필요)"
-    ),
-    code(
-        "DEV, EMG = 2, 3\n"
-        "def show(tag, w):\n"
-        "    print(f'{tag:30s} 선진={w[DEV]:6.2%} 신흥={w[EMG]:6.2%}')\n"
-        "\n"
-        "# 무제약(코너 가능)\n"
-        "show('제약 없음', min_variance(mu, cov, bounds=(0,1)).weights)\n"
-        "\n"
-        "# ① 자산별 상·하한: 선진·신흥 각 5~30%\n"
-        "b = [(0.0,1.0)]*6; b[DEV]=(0.05,0.30); b[EMG]=(0.05,0.30)\n"
-        "show('① 각 5~30% (bounds)', min_variance(mu, cov, bounds=b).weights)\n"
-        "\n"
-        "# ② 상한(≤): 선진+신흥 ≤ 50%\n"
-        "g = np.zeros(6); g[DEV]=1.0; g[EMG]=1.0\n"
-        "show('② 선진+신흥 ≤ 50% (le)',\n"
-        "     min_variance(mu, cov, bounds=(0,1), linear_ineq_le=[(g, 0.5)]).weights)\n"
-        "\n"
-        "# ③ 비율 밴드: 0.5×선진 ≤ 신흥 ≤ 선진\n"
-        "lo = np.zeros(6); lo[EMG]=1.0; lo[DEV]=-0.5   # 신흥 ≥ 0.5선진\n"
-        "hi = np.zeros(6); hi[EMG]=1.0; hi[DEV]=-1.0   # 신흥 ≤ 선진 (le)\n"
-        "show('③ 0.5선진 ≤ 신흥 ≤ 선진',\n"
-        "     min_variance(mu, cov, bounds=(0,1),\n"
-        "                  linear_ineq=[(lo, 0.0)], linear_ineq_le=[(hi, 0.0)]).weights)"
-    ),
-    md(
-        "## 8. ✏️ 내 데이터 입력\n"
-        "\n"
-        "아래 `MY_MU`·`MY_STD`·`MY_CORR` 만 실제 값으로 바꾸고 이 셀을 실행하면 된다.\n"
-        "값이 아직 없는 자산은 `exclude` 로 빼 두면 된다."
-    ),
-    code(
-        "# ── 여기만 수정 ───────────────────────────────────────────────\n"
-        "MY_NAMES = ['국내주식', '국내채권', '해외선진주식', '해외신흥주식', '해외채권', '현금성']\n"
-        "MY_MU  = [0.064, 0.038, 0.075, 0.085, 0.041, 0.022]   # 기대수익 μ\n"
-        "MY_STD = [0.160, 0.030, 0.150, 0.200, 0.055, 0.010]   # 표준편차 σ\n"
-        "MY_CORR = [\n"
-        "    [1.00, 0.10, 0.55, 0.65, 0.20, 0.00],\n"
-        "    [0.10, 1.00, 0.05, 0.10, 0.40, 0.15],\n"
-        "    [0.55, 0.05, 1.00, 0.70, 0.25, 0.00],\n"
-        "    [0.65, 0.10, 0.70, 1.00, 0.30, 0.00],\n"
-        "    [0.20, 0.40, 0.25, 0.30, 1.00, 0.10],\n"
-        "    [0.00, 0.15, 0.00, 0.00, 0.10, 1.00],\n"
-        "]\n"
-        "TARGET_RETURN = 0.05\n"
-        "# ─────────────────────────────────────────────────────────────\n"
-        "\n"
-        "mu2  = np.array(MY_MU, float)\n"
-        "std2 = np.array(MY_STD, float)\n"
-        "corr2 = np.array(MY_CORR, float)\n"
-        "cov2 = np.outer(std2, std2) * corr2\n"
-        "assert np.linalg.eigvalsh(cov2).min() > -1e-12, 'Σ가 양의정부호가 아님 — 상관행렬 확인'\n"
-        "\n"
-        "r = min_variance(mu2, cov2, target_return=TARGET_RETURN, bounds=(0, 1))\n"
-        "print('성공:', r.success, ' 수익:%.4f'%r.ret, ' 변동성:%.4f'%r.volatility)\n"
-        "for n, w in zip(MY_NAMES, r.weights):\n"
-        "    print(f'  {n:10s} {w:8.4%}')"
-    ),
+    code(SETUP),
+    code(RUN_OPT),
+    md("---\n# ✏️ 여기서 입력하세요"),
+    code(FORM),
 ]
 
 nb = {
